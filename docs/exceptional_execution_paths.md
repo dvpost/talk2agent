@@ -1,7 +1,7 @@
 # Exceptional Execution Paths — реестр разрешённых исключительных путей
 
-Документ текущего состояния по §12 конвенции;
-[источник правил](../AGENTS.md#правила-работы).
+Документ текущего состояния по
+[правилам реестра конвенции](../.agents/skills/convention-coding/references/exceptional-execution-paths.md).
 Канонический путь: `docs/exceptional_execution_paths.md`.
 Реестр содержит только действующие, явно согласованные исключения.
 

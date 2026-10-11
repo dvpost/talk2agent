@@ -22,7 +22,8 @@ uv run python scripts/check_docs.py
 ```
 
 [check_docs.py](../scripts/check_docs.py) проверяет существование файлов и
-каталогов, указанных в inline-ссылках корневых Markdown-документов, `docs/` и `TODO/`.
+каталогов, указанных в inline-ссылках корневых Markdown-документов, `docs/`, `TODO/`,
+`.agents/skills/` и `.claude/skills/`.
 Примеры в code blocks/inline code пропускаются. Внешние URL и якоря `#...`
 не проверяются; инструмент не оценивает достоверность текста.
 
@@ -61,8 +62,8 @@ uv run pytest -q
 
 ## Выбор проверок
 
-Общие правила тестирования — §5 конвенции, источник закреплён в
-[AGENTS.md](../AGENTS.md#правила-работы).
+Общие правила тестирования — в
+[навыке конвенции](../.agents/skills/convention-testing/SKILL.md).
 В проекте используются pytest, pytest-asyncio и pytest-qt; комментарии сценариев
 пишутся по-русски. Qt по умолчанию работает без рабочего стола.
 
@@ -179,8 +180,9 @@ uv run python benchmarks/autostart_smoke.py --executable dist/talk2g/talk2g
 
 На Windows исполняемый файл — `dist/talk2g/talk2g.exe`.
 Сборка содержит GigaAM CTC, Silero VAD и зависимости приложения.
-Документация находится в `dist/talk2g/docs`, README, AGENTS и LICENSE —
-в корне поставки. Переносите папку целиком; Python и uv для неё не нужны,
+Документация находится в `dist/talk2g/docs`, README, AGENTS, CLAUDE и LICENSE —
+в корне поставки; локальные навыки и адаптеры — в `.agents/skills/` и `.claude/skills/`.
+Переносите папку целиком; Python и uv для неё не нужны,
 системные требования Linux к PortAudio/xdotool остаются. Qt-библиотеки
 поставляются отдельными файлами; тексты лицензий находятся в `licenses`.
 

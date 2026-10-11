@@ -55,7 +55,7 @@ uv sync --frozen --extra desktop --extra dev
 Для выбора дополнительных проверок, включая реальную модель, системный ввод
 и сборку, используйте [docs/VALIDATION.md](docs/VALIDATION.md).
 Источник конвенции и её закреплённая версия указаны в
-[AGENTS.md](AGENTS.md#правила-работы).
+[локальном индексе](docs/conventions/README.md).
 
 - [Архитектура и карта кода](docs/ARCHITECTURE.md).
 - [Протокол WebSocket v1](docs/PROTOCOL.md).

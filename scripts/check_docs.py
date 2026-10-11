@@ -1,4 +1,4 @@
-"""Check local inline Markdown links in root documents, docs/ and TODO/, without network access."""
+"""Check local inline Markdown links in project documents and agent skills, without network access."""
 
 import argparse
 import re
@@ -8,8 +8,10 @@ from urllib.parse import unquote, urlsplit
 
 def check_links(root: Path) -> list[str]:
     errors = []
-    documents = sorted({*root.glob("*.md"), *(root / "docs").rglob("*.md"), *(root / "TODO").rglob("*.md")})
-    for document in documents:
+    documents = set(root.glob("*.md"))
+    for directory in ("docs", "TODO", ".agents/skills", ".claude/skills"):
+        documents.update((root / directory).rglob("*.md"))
+    for document in sorted(documents):
         fence = ""
         for number, line in enumerate(document.read_text(encoding="utf-8").splitlines(), 1):
             stripped = line.lstrip()
