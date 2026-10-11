@@ -17,6 +17,7 @@ uv sync --frozen --extra desktop --extra dev
 ```bash
 ./check.sh tests/test_dictated_text.py
 ./check.sh tests/test_protocol.py tests/test_server.py tests/test_client.py
+./check.sh tests/test_launcher.py tests/test_autostart.py
 uv run python scripts/check_docs.py
 ```
 
@@ -29,6 +30,18 @@ GitHub Actions выполняет статические проверки, пр�
 pytest на Linux и Windows, затем отдельно запускает native X11-тесты на Linux
 в Xvfb. Конфигурация — [.github/workflows/check.yml](../.github/workflows/check.yml).
 Настоящая модель и интерактивные Windows/Wayland-сценарии в CI не запускаются.
+
+`test_launcher.py` проверяет настоящий Desktop Entry через GIO и
+`desktop-file-validate` при наличии этих утилит: имена файлов, параметры запуска,
+профиль и иконку. Полный сценарий меню запускается в отдельном Xvfb:
+
+```bash
+benchmarks/check_x11.sh tests/test_launcher.py
+```
+
+Он использует временные XDG-каталоги, профиль и `TMPDIR` для изоляции Qt IPC:
+запуск по desktop ID, повторное открытие того же окна и запуск после «Выход».
+Поставленная автономная программа и другие среды меню требуют отдельных проверок.
 
 На Windows после установки dev-зависимостей обычные gates запускаются напрямую:
 
@@ -71,7 +84,7 @@ uv run pytest -q
 | Расписание модели | [test_session.py](../tests/test_session.py): публичные feed/stop/run с управляемыми часами, без настоящей модели |
 | Архив | [test_session_output.py](../tests/test_session_output.py), [test_server.py](../tests/test_server.py): настоящий WAV/метаданные, вход модели и закрытие до терминального события |
 | Настройки и история | [test_settings_history.py](../tests/test_settings_history.py), [test_ui_pages.py](../tests/test_ui_pages.py): файлы профиля, SQLite и действия виджетов |
-| Контроллер и ввод | [test_desktop_controls.py](../tests/test_desktop_controls.py), [test_insertion.py](../tests/test_insertion.py): UI и очередь с doubles системных границ; [test_desktop.py](../tests/test_desktop.py) — настоящий ввод в отдельные окна |
+| Контроллер и ввод | [test_desktop_controls.py](../tests/test_desktop_controls.py), [test_insertion.py](../tests/test_insertion.py): UI и очередь с doubles системных границ; native-контроллер проверяет задержанный запрос внешнего терминала, стороннего читателя буфера и отказ доставки; [test_desktop.py](../tests/test_desktop.py) — настоящий ввод в отдельные окна |
 | Системные службы | [test_service.py](../tests/test_service.py), [test_model.py](../tests/test_model.py): локальный HTTP и отказ на внешней C++-границе ONNX; [test_portal.py](../tests/test_portal.py) — Wayland с doubles DBus |
 | Архитектура | [test_architecture.py](../tests/test_architecture.py): явные импорты, транзитивные зависимости и циклы; динамический importlib и внешние пакеты не анализируются |
 

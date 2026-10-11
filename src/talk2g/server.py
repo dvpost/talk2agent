@@ -149,6 +149,9 @@ class DictationServer:
         if host not in ("127.0.0.1", "localhost", "::1") and not self.settings.token:
             raise ValueError("Для сетевого сервера задайте TALK2G_TOKEN")
         try:
+            await self.load()
+            if self.loading_error:
+                raise RuntimeError(self.loading_error)
             async with serve(
                 self.handle,
                 host,
@@ -160,9 +163,6 @@ class DictationServer:
                 ping_timeout=60,
             ):
                 log.info("Сервер слушает %s:%d", host, port)
-                await self.load()
-                if self.loading_error:
-                    raise RuntimeError(self.loading_error)
                 await asyncio.Future()
         finally:
             self.pool.shutdown(wait=True, cancel_futures=True)

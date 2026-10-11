@@ -128,6 +128,8 @@ def main() -> None:
     app_parser = sub.add_parser("app", help="Приложение, локальный сервер запускается автоматически")
     app_parser.add_argument("--background", action="store_true", help="Запустить в системном трее")
     app_parser.add_argument("--home", type=Path, help="Каталог настроек и моделей")
+    launcher_parser = sub.add_parser("install-launcher", help="Добавить talk2g в меню приложений Linux")
+    launcher_parser.add_argument("--home", type=Path, help="Каталог настроек и моделей")
     sub.add_parser("toggle", help="Начать/остановить диктовку в уже запущенном приложении")
     sub.add_parser("quit", help="Завершить уже запущенное приложение и его локальный сервер")
     sub.add_parser("doctor", help="Проверить зависимости и микрофон")
@@ -152,6 +154,13 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     logging.getLogger("websockets.server").setLevel(logging.WARNING)
     try:
+        if args.command == "install-launcher":
+            if sys.platform != "linux":
+                raise RuntimeError("Ярлык меню приложений поддерживается в Linux")
+            from .launcher import install_launcher
+
+            print(f"Ярлык установлен: {install_launcher()}")
+            return
         settings = Settings.load()
         settings.token = os.environ.get("TALK2G_TOKEN", settings.token)
         if getattr(args, "model", None):
@@ -199,6 +208,10 @@ def main() -> None:
             log_path.chmod(0o600)
             handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
             logging.getLogger().addHandler(handler)
+            if sys.platform == "linux":
+                from .launcher import install_launcher
+
+                install_launcher()
             from .desktop import run_app
 
             run_app(settings, background=getattr(args, "background", False))

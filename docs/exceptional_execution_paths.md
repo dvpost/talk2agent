@@ -27,6 +27,9 @@
   Для локального запуска по требованию `MainWindow.start_recording` в
   [src/talk2g/desktop.py](../src/talk2g/desktop.py) запускает клиент до
   `LocalService.start`, поэтому первый health может опередить listener.
+  `DictationServer.run` в [src/talk2g/server.py](../src/talk2g/server.py)
+  открывает listener только после подготовки модели, по
+  [контракту запуска](PROTOCOL.md#потоковый-протокол-v1).
 - **Условия активации:** корректный health с ложным/отсутствующим `ready`
   и без непустого `error`; либо `URLError`, у которого `reason` является
   `ConnectionRefusedError`, только при `load_on_demand=True`, схеме `ws`
@@ -50,8 +53,8 @@
   остальные ошибки передаются через `failure`, захват закрывается.
   Cancel прекращает ожидание после текущего запроса, без подключения;
   Stop закрывает микрофон и сохраняет ожидание для распознавания буфера.
-- **Почему необходим сейчас:** при холодном запуске сервер открывает порт
-  и загружает модель после начала захвата. Тест холодного хоткея подтверждает
+- **Почему необходим сейчас:** при холодном запуске сервер загружает модель
+  и открывает порт после начала захвата. Тест холодного хоткея подтверждает
   этот порядок; интеграционные тесты подтверждают сохранение начала речи.
 - **Почему недостаточно явной ошибки:** отказ по первой проверке прерывал
   бы штатный запуск по требованию вместо распознавания уже принятой речи.
@@ -81,7 +84,10 @@
   `test_cancel_during_loading_stops_capture_without_waiting_for_model`,
   `test_full_buffer_stops_with_explicit_error_instead_of_dropping_words`;
   [tests/test_desktop_controls.py](../tests/test_desktop_controls.py) →
-  `test_cold_hotkey_records_before_readiness_and_unloads_between_sessions`.
+  `test_cold_hotkey_records_before_readiness_and_unloads_between_sessions`;
+  [tests/test_server.py](../tests/test_server.py) →
+  `test_listener_opens_only_after_model_preparation`,
+  `test_model_preparation_failure_stops_before_opening_listener`.
 - **Условие пересмотра:** изменение порядка запуска/буферизации, health-контракта,
   области серверов, порога ожидания, частоты проверок или требований к отмене.
 
@@ -112,7 +118,7 @@
   одного из перечисленных модификаторов, либо `x11_paste` выдаёт
   `ModifiersHeld` при повторной проверке под `grab_server`, до ввода.
 - **Условия запрета:** приостановленная/пустая очередь; изменившийся или
-  непроверяемый целевой фокус; другие ошибки проверки или системного ввода.
+  непроверяемый целевой фокус; изменившийся clipboard; другие ошибки проверки или системного ввода.
   После частичной либо полной отправки клавиш повтор запрещён:
   `ModifiersHeld` возникает только до первого `xtest.fake_input`.
 - **Реальное действие и ограничения:** исходная проверка — через 30 мс
@@ -149,9 +155,11 @@
   вставки; окончательный отказ — сигнал `failed(message, rest)`.
   `MainWindow._insertion_failure` в
   [src/talk2g/desktop.py](../src/talk2g/desktop.py) сохраняет остаток,
-  показывает ошибку в основном окне и сообщение «Вставка приостановлена ·
-  текст сохраняется» в overlay; пишет warning «Вставка приостановлена»
+  показывает причину в основном окне и overlay; пишет warning «Вставка приостановлена»
   с числом оставшихся символов. Отдельной метрики ожидания нет.
+  Доставка clipboard после однократной отправки клавиш имеет отдельную
+  [границу завершения](ARCHITECTURE.md#доставка-текста-x11); её ожидание
+  не повторяет системный ввод и не расширяет это разрешение RETRY.
 - **Одобрил оператор:** владелец talk2g, 2026-10-09.
   Идентификатор решения: `TALK2G-DEC-2026-10-09-FLOW-02`, зафиксирован здесь
   по сообщению «ок согласую» в текущем диалоге. Оно следует за описанием
@@ -166,6 +174,8 @@
   `test_x11_held_modifiers_are_rejected_before_any_keyboard_event`
   (Shift, Ctrl, Alt, Super, AltGr),
   `test_failed_keyboard_input_is_never_retried`,
+  `test_clipboard_replaced_during_modifier_wait_stops_before_input`,
+  `test_changed_x11_clipboard_owner_prevents_keyboard_events`,
   `test_unverifiable_x11_focus_does_not_send_keyboard_events`;
   [tests/test_desktop.py](../tests/test_desktop.py) →
   `test_paste_waits_for_hotkey_release_without_corrupting_next_press`,

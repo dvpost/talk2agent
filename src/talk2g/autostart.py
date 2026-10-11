@@ -6,22 +6,13 @@ import configparser
 import os
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 from .config import project_home
+from .desktop_entry import desktop_argument, write_desktop_file
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 VALUE_NAME = "talk2g"
-
-
-def desktop_argument(value: str) -> str:
-    if any(character in value for character in "\n\r\0"):
-        raise ValueError("Путь автозапуска содержит недопустимый символ")
-    # Desktop string escaping is undone before Exec argument unquoting.
-    value = value.replace("%", "%%")
-    value = "".join("\\" + character if character in '\\"`$' else character for character in value)
-    return '"' + value.replace("\\", "\\\\") + '"'
 
 
 class Autostart:
@@ -102,18 +93,7 @@ class Autostart:
                 "StartupNotify=false\n"
                 "X-GNOME-Autostart-enabled=true\n"
             )
-            self.entry.parent.mkdir(parents=True, exist_ok=True)
-            temporary = None
-            try:
-                with tempfile.NamedTemporaryFile(
-                    mode="w", encoding="utf-8", dir=self.entry.parent, prefix=".talk2g-", delete=False
-                ) as stream:
-                    temporary = Path(stream.name)
-                    stream.write(content)
-                temporary.replace(self.entry)
-            finally:
-                if temporary:
-                    temporary.unlink(missing_ok=True)
+            write_desktop_file(self.entry, content)
             return
         if self.platform == "win32":
             registry = self._windows_registry()

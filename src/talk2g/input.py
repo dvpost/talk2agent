@@ -48,9 +48,9 @@ class ModifiersHeld(RuntimeError):
     pass
 
 
-def x11_paste(target: str, shortcut: str) -> None:
+def x11_paste(target: str, shortcut: str, *, clipboard_owner: int | None = None) -> int | None:
     """Send one indivisible XTEST chord, without xdotool's per-key delays."""
-    from Xlib import XK, X, display
+    from Xlib import XK, X, Xatom, display
     from Xlib.ext import xtest
 
     connection = display.Display()
@@ -63,7 +63,9 @@ def x11_paste(target: str, shortcut: str) -> None:
         connection.close()
         raise RuntimeError("Клавиши вставки отсутствуют в раскладке X11")
     active_atom = connection.intern_atom("_NET_ACTIVE_WINDOW")
+    clipboard_atom = connection.intern_atom("CLIPBOARD") if clipboard_owner is not None else None
     connection.grab_server()
+    timestamp = None
     try:
         # Recheck under the same server lock as the complete chord. Another
         # XTEST client cannot hold Shift halfway through our key sequence.
@@ -73,10 +75,25 @@ def x11_paste(target: str, shortcut: str) -> None:
                 raise FocusChanged("Не удалось проверить активное окно X11. Текст сохранён для копирования")
             if str(active.value[0]) != target:
                 raise FocusChanged("Активное окно изменилось. Оставшийся текст сохранён для копирования")
+        if clipboard_owner is not None:
+            owner = connection.get_selection_owner(clipboard_atom)
+            if not owner or owner.id != clipboard_owner:
+                raise RuntimeError(
+                    "Буфер обмена изменился. Вставка остановлена, текст сохранён для копирования"
+                )
         mask = root.query_pointer().mask
         # EXC-0002: retry is safe only before XTEST input; see docs/exceptional_execution_paths.md.
         if mask & (X.ShiftMask | X.ControlMask | X.Mod1Mask | X.Mod4Mask | X.Mod5Mask):
             raise ModifiersHeld("Дождитесь отпускания клавиш")
+        if clipboard_owner is not None:
+            # A server timestamp separates GTK's ownership prefetch from paste.
+            probe = root.create_window(0, 0, 1, 1, 0, X.CopyFromParent, event_mask=X.PropertyChangeMask)
+            try:
+                probe.change_property(clipboard_atom, Xatom.INTEGER, 8, b"")
+                connection.sync()
+                timestamp = connection.next_event().time
+            finally:
+                probe.destroy()
         for code in codes:
             xtest.fake_input(connection, X.KeyPress, code)
         for code in reversed(codes):
@@ -85,6 +102,7 @@ def x11_paste(target: str, shortcut: str) -> None:
         connection.ungrab_server()
         connection.sync()
         connection.close()
+    return timestamp
 
 
 def modifiers_pressed() -> bool:
@@ -164,7 +182,7 @@ def windows_unicode(text: str) -> None:
         raise RuntimeError("Windows заблокировала ввод. Проверьте уровень прав целевого приложения")
 
 
-def paste(target: str, portal=None, mode: str = "auto") -> None:
+def paste(target: str, portal=None, mode: str = "auto", *, clipboard_owner: int | None = None) -> int | None:
     check_focus(target)
     if sys.platform == "win32":
         raise RuntimeError("Для Windows используйте Unicode-ввод")
@@ -174,4 +192,4 @@ def paste(target: str, portal=None, mode: str = "auto") -> None:
         portal.paste()
     else:
         shortcut = paste_shortcut(target, mode)
-        x11_paste(target, shortcut)
+        return x11_paste(target, shortcut, clipboard_owner=clipboard_owner)

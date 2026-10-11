@@ -69,6 +69,8 @@ class Overlay(QFrame):
         self.setStyleSheet("QFrame{background:#182238;border-radius:14px;} QLabel{color:#edf1f9;}")
         layout = QVBoxLayout(self)
         self.state = QLabel("Слушаю · горячая клавиша — завершить")
+        self.state.setTextFormat(Qt.TextFormat.PlainText)
+        self.state.setWordWrap(True)
         self.preview = QLabel("")
         self.preview.setWordWrap(True)
         layout.addWidget(self.state)

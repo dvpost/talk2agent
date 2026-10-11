@@ -1,14 +1,16 @@
 import os
+import signal
 import subprocess
 import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from PySide6.QtCore import QMimeData, QObject, Signal
+from PySide6.QtCore import QMimeData, QObject, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QPlainTextEdit
 
-from talk2g import desktop
+from talk2g import desktop, insertion
 from talk2g.autostart import Autostart
 from talk2g.config import Settings
 
@@ -211,6 +213,26 @@ def test_client_protocol_failure_preserves_confirmed_text_history_and_clipboard(
     assert window.last_error == "Ошибка: Некорректный ответ сервера: поле recording.message"
     assert window.dictation.confirmed.toPlainText() == QApplication.clipboard().text() == "Подтверждено."
     assert len(window.history.recent()) == 1 and window.history.recent()[0][1] == "Подтверждено."
+
+
+def test_dictation_failure_exposes_the_reason_in_both_windows_and_log(window, caplog):
+    # GIVEN: запись запущена без системной вставки, клиент сообщает конкретный отказ.
+    window.set_feature("auto_insert", False)
+    window.start_recording()
+    thread = window.thread
+    # WHEN: запуск распознавания завершается ошибкой, затем запись закрывается.
+    thread.failure.emit("Микрофон не открылся за 8 секунд")
+    thread.finished.emit()
+    # THEN: причина доступна в основном окне, overlay и журнале после завершения.
+    expected = "Ошибка: Микрофон не открылся за 8 секунд"
+    assert window.status.text() == expected
+    assert window.overlay.state.text() == expected
+    assert [
+        (record.levelname, record.getMessage())
+        for record in caplog.records
+        if record.name == "talk2g.desktop"
+    ] == [("ERROR", "Ошибка диктовки: Микрофон не открылся за 8 секунд")]
+    assert window.history.recent() == []
 
 
 @pytest.fixture
@@ -742,6 +764,37 @@ def test_disabling_both_outputs_preserves_clipboard_and_keeps_history(window, qt
     assert not window.overlay.isVisible()
 
 
+def test_reenabling_insertion_waits_for_previous_delivery(window, qtbot, monkeypatch):
+    # GIVEN: системная очередь уже отправила клавиши, но ещё не передала текст.
+    class PendingWriter(QObject):
+        failed = Signal(str, str)
+        idle = Signal()
+
+        def __init__(self, *args):
+            super().__init__()
+            self.busy = False
+
+        def add(self, text):
+            self.busy = True
+
+        def suspend(self):
+            return ""
+
+    monkeypatch.setattr(desktop, "InsertionQueue", PendingWriter)
+    monkeypatch.setattr(desktop, "foreground", lambda: "target")
+    window.set_feature("show_overlay", False)
+    window.ready = True
+    window.toggle()
+    qtbot.waitUntil(lambda: window.thread is not None)
+    window.thread.event.emit({"type": "commit", "seq": 1, "delta": "Первый блок."})
+    # WHEN: пользователь выключает и сразу включает автоввод.
+    window.set_feature("auto_insert", False)
+    window.set_feature("auto_insert", True)
+    # THEN: новая очередь не заменяет буфер незавершённой вставки, настройка остаётся выключенной.
+    assert not window.settings.auto_insert and not Settings.load().auto_insert
+    assert window.status.text() == "Не удалось изменить настройку: Дождитесь завершения предыдущей вставки"
+
+
 @pytest.mark.desktop
 @pytest.mark.skipif(
     not os.environ.get("TALK2G_DESKTOP_TESTS") or sys.platform != "linux", reason="Native X11 insertion"
@@ -772,6 +825,126 @@ def test_copy_disabled_restores_rich_clipboard_after_real_insertion(window, qtbo
     assert QApplication.clipboard().text() == "Старый буфер"
     assert QApplication.clipboard().mimeData().html() == "<b>Старый буфер</b>"
     assert not window.overlay.isVisible()
+
+
+@pytest.fixture
+def stalled_terminal(window, qtbot, tmp_path, copy_on_stop):
+    output = tmp_path / "received.txt"
+    receiver = Path(__file__).parent / "support/terminal_receiver.py"
+    terminal = subprocess.Popen(
+        [
+            "xfce4-terminal",
+            "--disable-server",
+            "--title=talk2g delayed paste test",
+            "--dynamic-title-mode=none",
+            "--execute",
+            sys.executable,
+            str(receiver),
+            "--output",
+            str(output),
+            "--bracketed",
+        ]
+    )
+    try:
+        qtbot.waitUntil(lambda: output.with_suffix(".ready").exists(), timeout=5000)
+        target = subprocess.check_output(
+            ["xdotool", "search", "--sync", "--onlyvisible", "--name", "talk2g delayed paste test"],
+            text=True,
+            timeout=5,
+        ).splitlines()[-1]
+        subprocess.run(["xdotool", "windowactivate", "--sync", target], check=True, timeout=3)
+        qtbot.waitUntil(lambda: desktop.foreground() == target)
+        original = QMimeData()
+        original.setText("Прежний текст из буфера.")
+        original.setHtml("<b>Прежний текст из буфера.</b>")
+        QApplication.clipboard().setMimeData(original)
+        window.set_feature("copy_on_stop", copy_on_stop)
+        window.set_feature("show_overlay", False)
+        window.ready = True
+        os.kill(terminal.pid, signal.SIGSTOP)
+        yield SimpleNamespace(output=output, process=terminal)
+    finally:
+        os.kill(terminal.pid, signal.SIGCONT)
+        terminal.terminate()
+        terminal.wait(timeout=5)
+
+
+@pytest.mark.desktop
+@pytest.mark.skipif(
+    not os.environ.get("TALK2G_DESKTOP_TESTS") or sys.platform != "linux", reason="Native X11 insertion"
+)
+@pytest.mark.parametrize("copy_on_stop", [False, True], ids=["restore-original", "copy-dictation"])
+def test_delayed_terminal_receives_dictation_before_clipboard_restore(
+    window, stalled_terminal, qtbot, tmp_path, copy_on_stop
+):
+    # GIVEN: внешнее окно временно занято; буфер содержит посторонний rich text.
+    output, terminal = stalled_terminal.output, stalled_terminal.process
+    # WHEN: запись завершается, а приложение читает буфер позже прежних 150 мс.
+    window.toggle()
+    qtbot.waitUntil(lambda: window.thread is not None)
+    window.thread.event.emit({"type": "commit", "seq": 1, "delta": "Моя новая"})
+    window.thread.event.emit({"type": "commit", "seq": 2, "delta": " диктовка."})
+    window.thread.finished.emit()
+    copied = tmp_path / "other-reader.txt"
+    with copied.open("wb") as stream:
+        reader = subprocess.Popen(["xclip", "-selection", "clipboard", "-out"], stdout=stream)
+        try:
+            qtbot.waitUntil(lambda: reader.poll() is not None, timeout=2000)
+            assert reader.returncode == 0 and copied.read_text() == "Моя новая"
+            assert window.inserter.busy  # another reader does not complete the target's block
+        finally:
+            if reader.poll() is None:
+                reader.terminate()
+            reader.wait(timeout=3)
+    QTimer.singleShot(600, lambda: os.kill(terminal.pid, signal.SIGCONT))
+    qtbot.waitUntil(lambda: output.exists() and output.read_text() == "Моя новая диктовка.", timeout=5000)
+    qtbot.waitUntil(lambda: not window.inserter.busy, timeout=5000)
+    # THEN: оба блока введены один раз в порядке распознавания; история и итоговый буфер корректны.
+    assert window.history.recent()[0][1] == "Моя новая диктовка."
+    if copy_on_stop:
+        assert QApplication.clipboard().text() == "Моя новая диктовка."
+    else:
+        assert QApplication.clipboard().text() == "Прежний текст из буфера."
+        assert QApplication.clipboard().mimeData().html() == "<b>Прежний текст из буфера.</b>"
+
+
+@pytest.mark.desktop
+@pytest.mark.skipif(
+    not os.environ.get("TALK2G_DESKTOP_TESTS") or sys.platform != "linux", reason="Native X11 insertion"
+)
+@pytest.mark.parametrize("copy_on_stop", [False, True], ids=["restore-original", "copy-dictation"])
+def test_delivery_expiry_keeps_the_sent_block_for_late_paste(
+    window, stalled_terminal, qtbot, monkeypatch, caplog, copy_on_stop
+):
+    # GIVEN: внешнее окно не обрабатывает вставку, предыдущий clipboard содержит другой текст.
+    deadlines = []
+    native_timer = QTimer.singleShot
+
+    def schedule(delay, callback):
+        if delay == 5000:
+            deadlines.append(callback)
+        else:
+            native_timer(delay, callback)
+
+    monkeypatch.setattr(insertion, "QTimer", SimpleNamespace(singleShot=schedule))
+    window.toggle()
+    qtbot.waitUntil(lambda: window.thread is not None)
+    window.thread.event.emit({"type": "commit", "seq": 1, "delta": "Моя новая"})
+    window.thread.event.emit({"type": "commit", "seq": 2, "delta": " диктовка."})
+    qtbot.waitUntil(lambda: bool(deadlines), timeout=2000)
+    # WHEN: детерминированно истекает ожидание доставки и запись заканчивается.
+    deadlines[0]()
+    window.thread.finished.emit()
+    assert QApplication.clipboard().text() == "Моя новая"
+    os.kill(stalled_terminal.process.pid, signal.SIGCONT)
+    output = stalled_terminal.output
+    qtbot.waitUntil(lambda: output.exists() and output.read_text() == "Моя новая", timeout=5000)
+    # THEN: поздняя вставка получает отправленный блок, остаток и история сохранены, ошибка видна.
+    error = "Окно не запросило текст за 5 секунд. Вставка остановлена, текст сохранён для копирования"
+    assert window.remainder == window.history.recent()[0][1] == "Моя новая диктовка."
+    assert window.status.text() == window.overlay.state.text() == error
+    assert any(error in record.message for record in caplog.records)
+    assert QApplication.clipboard().text() == "Моя новая"
 
 
 @pytest.mark.desktop

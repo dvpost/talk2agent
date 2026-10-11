@@ -31,4 +31,5 @@ case "$libraries" in
 esac
 ./run-linux.sh download
 ./run-linux.sh doctor
-echo 'Ready. Start with ./run-linux.sh'
+./run-linux.sh install-launcher
+echo 'Ready. Open the application menu and search for talk2g, or start with ./run-linux.sh'

@@ -1,9 +1,11 @@
 import asyncio
 import json
+import logging
 import threading
 import time
 import wave
 from pathlib import Path
+from urllib.error import URLError
 
 import numpy as np
 import pytest
@@ -12,12 +14,14 @@ from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 from websockets.exceptions import InvalidStatus
 
+from talk2g import server as model_boundary
 from talk2g import session_output as recording_boundary
 from talk2g.audio import pcm
 from talk2g.config import RATE, Settings
 from talk2g.model import Word
 from talk2g.recording import SessionRecording
 from talk2g.server import DictationServer
+from talk2g.service import health
 
 
 class Detector:
@@ -66,6 +70,86 @@ async def collect(socket, result=None):
 async def send_audio(socket, audio):
     for offset in range(0, len(audio), RATE):
         await socket.send(pcm(audio[offset : offset + RATE]))
+
+
+async def test_listener_opens_only_after_model_preparation(monkeypatch, tmp_path, unused_tcp_port, caplog):
+    # GIVEN: подготовка модели остановлена на управляемом барьере внешней границы.
+    entered, release = threading.Event(), threading.Event()
+    listening = asyncio.Event()
+
+    def prepare(settings, home):
+        entered.set()
+        assert release.wait(timeout=5)
+        recognizer = Recognizer()
+        recognizer.vad_path = tmp_path / "vad.onnx"
+        return recognizer
+
+    class ListenerLog(logging.Handler):
+        def emit(self, record):
+            if record.getMessage().startswith("Сервер слушает "):
+                listening.set()
+
+    monkeypatch.setattr(model_boundary, "GigaRecognizer", prepare)
+    monkeypatch.setattr(model_boundary, "SileroDetector", lambda path: Detector())
+    caplog.set_level(logging.INFO, logger="talk2g.server")
+    logger = logging.getLogger("talk2g.server")
+    observer = ListenerLog()
+    logger.addHandler(observer)
+    service = DictationServer(Settings(), home=tmp_path)
+    url = f"ws://127.0.0.1:{unused_tcp_port}/v1/dictate"
+    task = asyncio.create_task(service.run("127.0.0.1", unused_tcp_port))
+    try:
+        assert await asyncio.to_thread(entered.wait, 3)
+        # WHEN: проверяем настоящий HTTP во время загрузки, затем разрешаем подготовку.
+        with pytest.raises(URLError) as refused:
+            await asyncio.to_thread(health, url)
+        assert isinstance(refused.value.reason, ConnectionRefusedError)
+        release.set()
+        await asyncio.wait_for(listening.wait(), 3)
+        # THEN: первый доступный health готов; WebSocket принимает и завершает сессию.
+        assert await asyncio.to_thread(health, url) == {
+            "app": "talk2g",
+            "protocol": 1,
+            "ready": True,
+            "model": "gigaam-v3-e2e-ctc",
+            "busy": False,
+            "error": "",
+        }
+        async with connect(url, proxy=None) as socket:
+            ready = await start(socket)
+            assert ready["type"] == "ready" and ready["recognize_on_pause"] is True
+            await socket.send('{"type":"stop"}')
+            events = await asyncio.wait_for(collect(socket), 3)
+        assert events[-1]["type"] == "session_end" and events[-1]["text"] == ""
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        logger.removeHandler(observer)
+
+
+async def test_model_preparation_failure_stops_before_opening_listener(
+    monkeypatch, tmp_path, unused_tcp_port, caplog
+):
+    # GIVEN: внешняя модель сообщает конкретный отказ подготовки.
+    def failed(settings, home):
+        raise OSError("Не удалось открыть тестовую модель")
+
+    monkeypatch.setattr(model_boundary, "GigaRecognizer", failed)
+    caplog.set_level(logging.INFO, logger="talk2g.server")
+    service = DictationServer(Settings(), home=tmp_path)
+    # WHEN: запускаем сервер с настоящим HTTP/WebSocket listener.
+    with pytest.raises(RuntimeError, match="^Не удалось открыть тестовую модель$"):
+        await service.run("127.0.0.1", unused_tcp_port)
+    # THEN: причина сохранена, порт не открывался и не доступен после отказа.
+    assert not any(
+        record.getMessage().startswith("Сервер слушает ")
+        for record in caplog.records
+        if record.name == "talk2g.server"
+    )
+    with pytest.raises(URLError) as refused:
+        await asyncio.to_thread(health, f"ws://127.0.0.1:{unused_tcp_port}/v1/dictate")
+    assert isinstance(refused.value.reason, ConnectionRefusedError)
 
 
 async def test_pause_mode_waits_for_silence_commits_once_and_flushes_stop_tail(server):

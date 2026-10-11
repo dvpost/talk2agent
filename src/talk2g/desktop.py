@@ -365,6 +365,8 @@ class MainWindow(QMainWindow):
         if getattr(self.settings, name) == enabled:
             return
         try:
+            if name == "auto_insert" and enabled and any(writer.busy for writer in self.insertion_queues):
+                raise RuntimeError("Дождитесь завершения предыдущей вставки")
             new = replace(self.settings, **{name: enabled})
             if name == "autostart":
                 self.autostart.set_enabled(enabled)
@@ -430,7 +432,7 @@ class MainWindow(QMainWindow):
         if not self.ready and not self.settings.load_on_demand:
             self.check_server()
             return
-        if self.inserter and self.inserter.busy:
+        if any(writer.busy for writer in self.insertion_queues):
             QTimer.singleShot(30, self._begin_requested_recording)
             return
         self.start_recording()
@@ -647,12 +649,13 @@ class MainWindow(QMainWindow):
         self.remainder += text
         self.last_error = message
         self.status.setText(message)
-        self.overlay.state.setText("Вставка приостановлена · текст сохраняется")
+        self.overlay.state.setText(message)
 
     def _failure(self, message):
+        log.error("Ошибка диктовки: %s", message)
         self.last_error = "Ошибка: " + message
-        self.status.setText("Ошибка: " + message)
-        self.overlay.state.setText("Ошибка · полученный текст сохранён")
+        self.status.setText(self.last_error)
+        self.overlay.state.setText(self.last_error)
 
     def _finished(self):
         if self.quitting or self.thread is None:
@@ -688,7 +691,11 @@ class MainWindow(QMainWindow):
 
     def _copy_completed_text(self):
         # Never replace a delta while the target is still requesting it from Qt.
-        if self.thread is not None or (self.inserter and self.inserter.busy) or not self.clipboard_pending:
+        if (
+            self.thread is not None
+            or any(writer.busy for writer in self.insertion_queues)
+            or not self.clipboard_pending
+        ):
             return
         self.clipboard_pending = False
         try:
@@ -699,6 +706,8 @@ class MainWindow(QMainWindow):
             self.clipboard_before = None
 
     def _update_completed_clipboard(self):
+        if any(writer.delivery_uncertain for writer in self.insertion_queues):
+            return
         text = self.dictated_text.text
         restore = not (self.settings.copy_on_stop and text)
         if restore:
